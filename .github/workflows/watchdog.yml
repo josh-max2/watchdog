@@ -17,20 +17,26 @@ jobs:
         run: |
           set -e
           NOW=$(date +%s)
-          EPOCH=$(curl -sf "https://josh-max2.github.io/tradetest/data/paper.json?cb=$NOW" | python3 -c "import sys,json;print(json.load(sys.stdin).get('generated_epoch',0))" || echo 0)
-          AGE=$(( (NOW - EPOCH) / 60 ))
-          echo "data age: ${AGE} min"
+          # all three bots publish independent feeds; any one going stale is an incident
+          # (2026-07-09: extended from paper.json-only to cover the mirror + rungv2 sidecars)
+          STALE=""
+          for FEED in paper mirror rungv2; do
+            EPOCH=$(curl -sf "https://josh-max2.github.io/tradetest/data/${FEED}.json?cb=$NOW" | python3 -c "import sys,json;print(json.load(sys.stdin).get('generated_epoch',0))" || echo 0)
+            AGE=$(( (NOW - EPOCH) / 60 ))
+            echo "${FEED}.json age: ${AGE} min"
+            if [ "$AGE" -gt 45 ]; then STALE="${STALE}${FEED} (${AGE}m) "; fi
+          done
           OPEN=$(gh issue list -R josh-max2/kalshi-watchdog --state open --label bot-down --json number --jq 'length')
-          if [ "$AGE" -gt 45 ]; then
+          if [ -n "$STALE" ]; then
             if [ "$OPEN" = "0" ]; then
               gh issue create -R josh-max2/kalshi-watchdog --label bot-down \
-                --title "🔴 Live trading bot SILENT for ${AGE} min" \
-                --body "The dashboard data at https://josh-max2.github.io/tradetest/ hasn't updated in **${AGE} minutes** (threshold 45). The bot or the PC is likely down. Orders on Kalshi are GTC and fail-safe, but no new placements are happening. Check the PC / task KalshiLiveTrader."
+                --title "🔴 Trading feed(s) SILENT: ${STALE}" \
+                --body "Stale feeds (threshold 45 min): **${STALE}** at https://josh-max2.github.io/tradetest/ . The corresponding bot or the PC is likely down. Orders on Kalshi are GTC (rungv2's carry 30-min self-expiry) and fail-safe, but no new placements are happening. Check the PC / tasks KalshiLiveTrader, KalshiMirror, KalshiRungV2."
             fi
           else
             if [ "$OPEN" != "0" ]; then
               N=$(gh issue list -R josh-max2/kalshi-watchdog --state open --label bot-down --json number --jq '.[0].number')
-              gh issue close -R josh-max2/kalshi-watchdog "$N" -c "Recovered — data is ${AGE} min old."
+              gh issue close -R josh-max2/kalshi-watchdog "$N" -c "Recovered — all feeds fresh."
             fi
           fi
       - name: Monthly keepalive (prevents 60-day cron auto-disable)
